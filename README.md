@@ -31,7 +31,7 @@ The writing of one log batch can be broken down into three steps:
 3. Apply to memtable
 
 At step 2, to batch concurrent requests, each writing thread must enter a queue. The first in line automatically becomes the queue leader, responsible for writing the entire batch to the log file.
-
+和阿里云比赛一样的套路，batch io 提高读效率
 Both synchronous and non-sync writes are supported. When one write in a batch is marked synchronous, the batch leader will call [`fdatasync()`](https://linux.die.net/man/2/fdatasync) after writing. This way, buffered data is guaranteed to be flushed out onto the storage.
 
 After its data is written, each writing thread will proceed to apply the changes to memtable on their own.
