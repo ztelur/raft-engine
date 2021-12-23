@@ -39,8 +39,9 @@ pub struct SinglePipe<B: FileBuilder> {
     bytes_per_sync: usize,
     file_builder: Arc<B>,
     listeners: Vec<Arc<dyn EventListener>>,
-
+    // 旧的读取的文件
     files: CachePadded<RwLock<FileCollection>>,
+    // 写入的文件
     active_file: CachePadded<Mutex<ActiveFile<B>>>,
 }
 
@@ -182,6 +183,7 @@ impl<B: FileBuilder> SinglePipe<B> {
 }
 
 impl<B: FileBuilder> SinglePipe<B> {
+    // 找到了 handle 的定义了！！！！！
     fn read_bytes(&self, handle: FileBlockHandle) -> Result<Vec<u8>> {
         let fd = self.get_fd(handle.id.seq)?;
         let mut reader = build_file_reader(
@@ -189,6 +191,7 @@ impl<B: FileBuilder> SinglePipe<B> {
             &handle.id.build_file_path(&self.dir),
             fd,
         )?;
+        // 整体定义了一个 Reader，使用该 Reader 进行处理
         reader.read(handle)
     }
 

@@ -31,7 +31,7 @@ struct FileToRecover {
     path: PathBuf,
     fd: Arc<LogFd>,
 }
-
+// 专门用于生成 pipe_log 的 builder
 pub struct DualPipesBuilder<B: FileBuilder> {
     cfg: Config,
     file_builder: Arc<B>,

@@ -35,6 +35,7 @@ fn from_nix_error(e: nix::Error, custom: &'static str) -> std::io::Error {
 }
 
 impl LogFd {
+    // 打开一个已经存在的
     pub fn open<P: ?Sized + NixPath>(path: &P) -> IoResult<Self> {
         fail_point!("log_fd::open::err", |_| {
             Err(from_nix_error(nix::Error::EINVAL, "fp"))
@@ -55,7 +56,7 @@ impl LogFd {
             fcntl::open(path, flags, mode).map_err(|e| from_nix_error(e, "open"))?,
         ))
     }
-
+    // 创建一个不存在的
     pub fn create<P: ?Sized + NixPath>(path: &P) -> IoResult<Self> {
         fail_point!("log_fd::create::err", |_| {
             Err(from_nix_error(nix::Error::EINVAL, "fp"))
@@ -66,14 +67,14 @@ impl LogFd {
         let fd = fcntl::open(path, flags, mode).map_err(|e| from_nix_error(e, "open"))?;
         Ok(LogFd(fd))
     }
-
+    // 关闭自己
     pub fn close(&self) -> IoResult<()> {
         fail_point!("log_fd::close::err", |_| {
             Err(from_nix_error(nix::Error::EINVAL, "fp"))
         });
         close(self.0).map_err(|e| from_nix_error(e, "close"))
     }
-
+    // 底层功能，同步
     pub fn sync(&self) -> IoResult<()> {
         fail_point!("log_fd::sync::err", |_| {
             Err(from_nix_error(nix::Error::EINVAL, "fp"))
@@ -87,7 +88,7 @@ impl LogFd {
             nix::unistd::fsync(self.0).map_err(|e| from_nix_error(e, "fsync"))
         }
     }
-
+    // 读取
     pub fn read(&self, mut offset: usize, buf: &mut [u8]) -> IoResult<usize> {
         let mut readed = 0;
         while readed < buf.len() {
@@ -108,7 +109,7 @@ impl LogFd {
         }
         Ok(readed)
     }
-
+    // 写入
     pub fn write(&self, mut offset: usize, content: &[u8]) -> IoResult<usize> {
         fail_point!("log_fd::write::zero", |_| { Ok(0) });
         let mut written = 0;
@@ -129,7 +130,7 @@ impl LogFd {
         });
         Ok(written)
     }
-
+    // 文件大小
     pub fn file_size(&self) -> IoResult<usize> {
         fail_point!("log_fd::file_size::err", |_| {
             Err(from_nix_error(nix::Error::EINVAL, "fp"))
@@ -138,7 +139,7 @@ impl LogFd {
             .map(|n| n as usize)
             .map_err(|e| from_nix_error(e, "lseek"))
     }
-
+    // 删除
     pub fn truncate(&self, offset: usize) -> IoResult<()> {
         fail_point!("log_fd::truncate::err", |_| {
             Err(from_nix_error(nix::Error::EINVAL, "fp"))
@@ -146,6 +147,7 @@ impl LogFd {
         ftruncate(self.0, offset as i64).map_err(|e| from_nix_error(e, "ftruncate"))
     }
 
+    // 预先分配
     #[allow(unused_variables)]
     pub fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
         fail_point!("log_fd::allocate::err", |_| {
@@ -177,6 +179,7 @@ impl Drop for LogFd {
 }
 
 /// A `LogFile` is a `LogFd` wrapper that implements `Seek`, `Write` and `Read`.
+/// 为了实现通用的 std.io.Write 和 Reader 接口的
 pub struct LogFile {
     inner: Arc<LogFd>,
     offset: usize,
@@ -234,6 +237,7 @@ pub fn build_file_writer<B: FileBuilder>(
 }
 
 /// Append-only writer for log file.
+/// append-only writer
 pub struct LogFileWriter<B: FileBuilder> {
     fd: Arc<LogFd>,
     writer: B::Writer<LogFile>,
@@ -334,6 +338,7 @@ pub fn build_file_reader<B: FileBuilder>(
 
 /// Random-access reader for log file.
 pub struct LogFileReader<B: FileBuilder> {
+    // 注意，这里是一起用的，也就是所谓的高level和低level一起使用
     fd: Arc<LogFd>,
     reader: B::Reader<LogFile>,
 
@@ -349,7 +354,7 @@ impl<B: FileBuilder> LogFileReader<B> {
             offset: usize::MAX,
         })
     }
-
+    // 读写都使用 FileBuilder，但是file_size 则直接使用了fd
     pub fn read(&mut self, handle: FileBlockHandle) -> Result<Vec<u8>> {
         let mut buf = vec![0; handle.len];
         let size = self.read_to(handle.offset, &mut buf)?;

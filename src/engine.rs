@@ -75,10 +75,12 @@ where
         listeners.push(Arc::new(PurgeHook::new()) as Arc<dyn EventListener>);
 
         let start = Instant::now();
+        // 在生成 FilePipeLog 时需要传入 file_builder
         let mut builder = FilePipeLogBuilder::new(cfg.clone(), file_builder, listeners.clone());
         builder.scan()?;
         let (append, rewrite) = builder.recover::<MemTableRecoverContext>()?;
         let pipe_log = Arc::new(builder.finish()?);
+        // 生成对应的pipe_log
         rewrite.merge_append_context(append);
         let (memtables, stats) = rewrite.finish();
         info!("Recovering raft logs takes {:?}", start.elapsed());
