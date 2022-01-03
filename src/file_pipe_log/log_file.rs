@@ -15,6 +15,7 @@ use nix::unistd::{close, ftruncate, lseek, Whence};
 use nix::NixPath;
 
 use crate::file_builder::FileBuilder;
+use crate::file_system::FileSystem;
 use crate::metrics::*;
 use crate::FileBlockHandle;
 use crate::Result;
@@ -372,3 +373,32 @@ impl<B: FileBuilder> LogFileReader<B> {
         Ok(self.fd.file_size()?)
     }
 }
+
+pub struct DefaultFileSystem;
+
+impl FileSystem for DefaultFileSystem {
+    type Handle = LogFd;
+    type Reader = LogFile;
+    type Writer = LogFile;
+
+    fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<Self::Handle> {
+        LogFd::create(path)
+    }
+
+    fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<Self::Handle> {
+        LogFd::open(p)
+    }
+
+    fn new_reader(&self, handle: &Self::Handle) -> IoResult<Self::Reader> {
+        LogFile::new(handle.clone())
+    }
+
+    fn new_writer(&self, handle: &Self::Handle) -> IoResult<Self::Writer> {
+        todo!()
+    }
+
+    fn file_size(&self, handle: &Self::Handle) -> IoResult<usize> {
+        todo!()
+    }
+}
+
