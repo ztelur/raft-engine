@@ -2,6 +2,7 @@
 
 use std::io::{Read, Result, Seek, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 /// FileSystem
 pub trait FileSystem: Send + Sync {
@@ -11,9 +12,9 @@ pub trait FileSystem: Send + Sync {
     
     fn create<P: AsRef<Path>>(&self, path: P) -> Result<Self::Handle>;
     fn open<P: AsRef<Path>>(&self, path: P) -> Result<Self::Handle>;
-    fn new_reader(&self, handle: &Self::Handle) -> Result<Self::Reader>;
-    fn new_writer(&self, handle: &Self::Handle) -> Result<Self::Writer>;
-    fn file_size(&self, handle: &Self::Handle) -> Result<usize>;
+    fn new_reader(&self, handle: Arc<Self::Handle>) -> Result<Self::Reader>;
+    fn new_writer(&self, handle: Arc<Self::Handle>) -> Result<Self::Writer>;
+    fn file_size(&self, handle: Arc<Self::Handle>) -> Result<usize>;
 }
 
 pub trait WriteExt {
