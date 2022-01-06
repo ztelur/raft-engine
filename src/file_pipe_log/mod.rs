@@ -2,6 +2,7 @@
 
 mod format;
 mod log_file;
+mod log_file_with_file_system;
 mod pipe;
 mod pipe_builder;
 mod reader;

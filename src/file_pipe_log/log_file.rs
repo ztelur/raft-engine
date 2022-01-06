@@ -15,7 +15,6 @@ use nix::unistd::{close, ftruncate, lseek, Whence};
 use nix::NixPath;
 
 use crate::file_builder::FileBuilder;
-use crate::file_system::{FileSystem, WriteExt};
 use crate::metrics::*;
 use crate::FileBlockHandle;
 use crate::Result;
@@ -223,12 +222,6 @@ impl Seek for LogFile {
     }
 }
 
-impl WriteExt for LogFile {
-    fn finish(&self) -> IoResult<()> {
-        self.inner.sync()
-    }
-}
-
 pub fn build_file_writer<B: FileBuilder>(
     builder: &B,
     path: &Path,
@@ -379,74 +372,3 @@ impl<B: FileBuilder> LogFileReader<B> {
         Ok(self.fd.file_size()?)
     }
 }
-
-/// Random-access reader for log file.
-pub struct LogFileReaderWithFileSystem<F: FileSystem> {
-    handle : F::Handle,
-    reader: F::Reader,
-
-    offset: usize,
-}
-
-impl<B: FileBuilder> LogFileReaderWithFileSystem<B> {
-    fn open(fd: Arc<LogFd>, reader: B::Reader<LogFile>) -> Result<Self> {
-        Ok(Self {
-            fd,
-            reader,
-            // Set to an invalid offset to force a reseek at first read.
-            offset: usize::MAX,
-        })
-    }
-
-    pub fn read(&mut self, handle: FileBlockHandle) -> Result<Vec<u8>> {
-        let mut buf = vec![0; handle.len];
-        let size = self.read_to(handle.offset, &mut buf)?;
-        buf.truncate(size);
-        Ok(buf)
-    }
-
-    pub fn read_to(&mut self, offset: u64, buffer: &mut [u8]) -> Result<usize> {
-        if offset != self.offset as u64 {
-            self.reader.seek(SeekFrom::Start(offset))?;
-            self.offset = offset as usize;
-        }
-        let size = self.reader.read(buffer)?;
-        self.offset += size;
-        Ok(size)
-    }
-
-    #[inline]
-    pub fn file_size(&self) -> Result<usize> {
-        Ok(self.fd.file_size()?)
-    }
-}
-
-
-impl FileSystem for DefaultFileSystem<P> {
-    type Handle = LogFd;
-    type Reader = LogFile;
-    type Writer = LogFile;
-
-    fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
-        LogFd::create(path)
-    }
-
-    fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
-        LogFd::open(path)
-    }
-
-    fn new_reader(&self, handle: Arc<LogFd>) -> Result<LogFile> {
-        LogFile::new(handle.clone())?
-    }
-
-    fn new_writer(&self, handle: Arc<LogFd>) -> Result<LogFile> {
-        LogFile::new(handle.clone())?
-    }
-
-    fn file_size(&self, handle: Arc<LogFd>) -> IoResult<usize> {
-        handle.file_size()
-    }
-
-
-
-

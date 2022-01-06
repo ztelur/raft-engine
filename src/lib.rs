@@ -42,6 +42,7 @@ mod errors;
 mod event_listener;
 mod file_builder;
 mod file_pipe_log;
+mod file_system;
 mod log_batch;
 mod memtable;
 mod metrics;
@@ -51,7 +52,6 @@ mod purge;
 mod test_util;
 mod util;
 mod write_barrier;
-mod file_system;
 
 pub use config::{Config, RecoveryMode};
 pub use errors::{Error, Result};
