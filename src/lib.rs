@@ -11,16 +11,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! # Raft Engine
+
 #![feature(shrink_to)]
 #![feature(btree_drain_filter)]
 #![feature(generic_associated_types)]
-#![feature(test)]
+#![cfg_attr(feature = "nightly", feature(test))]
 
 #[macro_use]
 extern crate lazy_static;
+extern crate scopeguard;
+#[cfg(feature = "nightly")]
 extern crate test;
-
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 macro_rules! box_err {
     ($e:expr) => ({
@@ -33,8 +35,7 @@ macro_rules! box_err {
     });
 }
 
-pub mod codec;
-
+mod codec;
 mod config;
 mod consistency;
 mod engine;
@@ -42,6 +43,8 @@ mod errors;
 mod event_listener;
 mod file_pipe_log;
 mod file_system;
+#[cfg(feature = "scripting")]
+mod filter;
 mod log_batch;
 mod memtable;
 mod metrics;
@@ -54,13 +57,24 @@ mod write_barrier;
 
 use crate::file_pipe_log::DefaultFileSystem;
 pub use config::{Config, RecoveryMode};
+pub use engine::Engine;
 pub use errors::{Error, Result};
 pub use event_listener::EventListener;
 pub use log_batch::{Command, LogBatch, MessageExt};
-pub use pipe_log::{FileBlockHandle, FileId, FileSeq, LogQueue};
 pub use util::ReadableSize;
 
-pub type Engine<FileSystem = DefaultFileSystem> = engine::Engine<FileSystem>;
+#[cfg(feature = "internals")]
+pub mod internals {
+    //! A selective view of key components in Raft Engine. Exported under the
+    //! `internals` feature only.
+    pub use crate::event_listener::*;
+    pub use crate::file_pipe_log::*;
+    pub use crate::memtable::*;
+    pub use crate::pipe_log::*;
+    pub use crate::write_barrier::*;
+}
+
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]
 pub struct GlobalStats {
@@ -71,24 +85,24 @@ pub struct GlobalStats {
 
 impl GlobalStats {
     #[inline]
-    pub fn add(&self, queue: LogQueue, count: usize) {
+    pub fn add(&self, queue: pipe_log::LogQueue, count: usize) {
         match queue {
-            LogQueue::Append => {
+            pipe_log::LogQueue::Append => {
                 self.live_append_entries.fetch_add(count, Ordering::Relaxed);
             }
-            LogQueue::Rewrite => {
+            pipe_log::LogQueue::Rewrite => {
                 self.rewrite_entries.fetch_add(count, Ordering::Relaxed);
             }
         }
     }
 
     #[inline]
-    pub fn delete(&self, queue: LogQueue, count: usize) {
+    pub fn delete(&self, queue: pipe_log::LogQueue, count: usize) {
         match queue {
-            LogQueue::Append => {
+            pipe_log::LogQueue::Append => {
                 self.live_append_entries.fetch_sub(count, Ordering::Relaxed);
             }
-            LogQueue::Rewrite => {
+            pipe_log::LogQueue::Rewrite => {
                 self.deleted_rewrite_entries
                     .fetch_add(count, Ordering::Relaxed);
             }
@@ -114,10 +128,10 @@ impl GlobalStats {
     }
 
     #[inline]
-    pub fn live_entries(&self, queue: LogQueue) -> usize {
+    pub fn live_entries(&self, queue: pipe_log::LogQueue) -> usize {
         match queue {
-            LogQueue::Append => self.live_append_entries.load(Ordering::Relaxed),
-            LogQueue::Rewrite => {
+            pipe_log::LogQueue::Append => self.live_append_entries.load(Ordering::Relaxed),
+            pipe_log::LogQueue::Rewrite => {
                 let op = self.rewrite_entries.load(Ordering::Relaxed);
                 let dop = self.deleted_rewrite_entries.load(Ordering::Relaxed);
                 debug_assert!(op >= dop);
@@ -130,10 +144,10 @@ impl GlobalStats {
     pub fn flush_metrics(&self) {
         metrics::LOG_ENTRY_COUNT
             .rewrite
-            .set(self.live_entries(LogQueue::Rewrite) as i64);
+            .set(self.live_entries(pipe_log::LogQueue::Rewrite) as i64);
         metrics::LOG_ENTRY_COUNT
             .append
-            .set(self.live_entries(LogQueue::Append) as i64);
+            .set(self.live_entries(pipe_log::LogQueue::Append) as i64);
     }
 }
 

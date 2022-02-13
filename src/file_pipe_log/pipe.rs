@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use crossbeam::utils::CachePadded;
 use fail::fail_point;
-use fs2::FileExt;
 use log::{error, warn};
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
@@ -18,8 +17,8 @@ use crate::metrics::*;
 use crate::pipe_log::{FileBlockHandle, FileId, FileSeq, LogQueue, PipeLog};
 use crate::{Error, Result};
 
-use super::format::{lock_file_path, FileNameExt};
-use super::log_file::{build_file_reader, build_file_writer, LogFileWriter};
+use super::format::FileNameExt;
+use super::log_file::{build_file_reader, build_file_writer, LogFd, LogFileWriter};
 
 struct FileCollection<F: FileSystem> {
     first_seq: FileSeq,
@@ -32,7 +31,8 @@ struct ActiveFile<F: FileSystem> {
     writer: LogFileWriter<F>,
 }
 
-pub struct SinglePipe<F: FileSystem> {
+/// A file-based log storage that arranges files as one single queue.
+pub(super) struct SinglePipe<F: FileSystem> {
     queue: LogQueue,
     dir: String,
     target_file_size: usize,
@@ -40,7 +40,9 @@ pub struct SinglePipe<F: FileSystem> {
     file_system: Arc<F>,
     listeners: Vec<Arc<dyn EventListener>>,
 
+    /// All log files.
     files: CachePadded<RwLock<FileCollection<F>>>,
+    /// The log file opened for write.
     active_file: CachePadded<Mutex<ActiveFile<F>>>,
 }
 
@@ -54,6 +56,7 @@ impl<F: FileSystem> Drop for SinglePipe<F> {
 }
 
 impl<F: FileSystem> SinglePipe<F> {
+    /// Opens a new [`SinglePipe`].
     pub fn open(
         cfg: &Config,
         file_system: Arc<F>,
@@ -117,12 +120,15 @@ impl<F: FileSystem> SinglePipe<F> {
         Ok(pipe)
     }
 
+    /// Synchronizes all metadatas associated with the working directory to the
+    /// filesystem.
     fn sync_dir(&self) -> Result<()> {
         let path = PathBuf::from(&self.dir);
         std::fs::File::open(path).and_then(|d| d.sync_all())?;
         Ok(())
     }
 
+    /// Returns a shared [`LogFd`] for the specified file sequence number.
     fn get_fd(&self, file_seq: FileSeq) -> Result<Arc<F::Handle>> {
         let files = self.files.read();
         if file_seq < files.first_seq || file_seq > files.active_seq {
@@ -131,6 +137,9 @@ impl<F: FileSystem> SinglePipe<F> {
         Ok(files.fds[(file_seq - files.first_seq) as usize].clone())
     }
 
+    /// Creates a new file for write, and rotates the active log file.
+    ///
+    /// This operation is atomic in face of errors.
     fn rotate_imp(&self, active_file: &mut MutexGuard<ActiveFile<F>>) -> Result<()> {
         let _t = StopWatch::new(&LOG_ROTATE_DURATION_HISTOGRAM);
         let seq = active_file.seq + 1;
@@ -149,7 +158,7 @@ impl<F: FileSystem> SinglePipe<F> {
                 self.file_system.as_ref(),
                 &path,
                 fd.clone(),
-                true, /*create*/
+                true, /* create */
             )?,
         };
 
@@ -173,6 +182,7 @@ impl<F: FileSystem> SinglePipe<F> {
         Ok(())
     }
 
+    /// Synchronizes current states to related metrics.
     fn flush_metrics(&self, len: usize) {
         match self.queue {
             LogQueue::Append => LOG_FILE_COUNT.append.set(len as i64),
@@ -289,28 +299,28 @@ impl<F: FileSystem> SinglePipe<F> {
     }
 }
 
+/// A [`PipeLog`] implementation that stores data in filesystem.
 pub struct DualPipes<F: FileSystem> {
-    pipes: [SinglePipe<F>; 2],
+    pipes: [SinglePipe<B>; 2],
 
-    _lock_file: File,
+    _dir_lock: File,
 }
 
 impl<F: FileSystem> DualPipes<F> {
-    pub fn open(dir: &str, appender: SinglePipe<F>, rewriter: SinglePipe<F>) -> Result<Self> {
-        let lock_file = File::create(lock_file_path(dir))?;
-        lock_file.try_lock_exclusive().map_err(|e| {
-            Error::Other(box_err!(
-                "Failed to lock file: {}, maybe another instance is using this directory.",
-                e
-            ))
-        })?;
-
+    /// Open a new [`DualPipes`]. Assumes the two [`SinglePipe`]s share the
+    /// same directory, and that directory is locked by `dir_lock`.
+    pub(super) fn open(
+        dir_lock: File,
+        appender: SinglePipe<F>,
+        rewriter: SinglePipe<F>,
+    ) -> Result<Self> {
         // TODO: remove this dependency.
         debug_assert_eq!(LogQueue::Append as usize, 0);
         debug_assert_eq!(LogQueue::Rewrite as usize, 1);
+
         Ok(Self {
             pipes: [appender, rewriter],
-            _lock_file: lock_file,
+            _dir_lock: dir_lock,
         })
     }
 
@@ -363,6 +373,7 @@ mod tests {
     use tempfile::Builder;
 
     use super::super::format::LogFileHeader;
+    use super::super::pipe_builder::lock_dir;
     use super::*;
     use crate::util::ReadableSize;
 
@@ -379,7 +390,7 @@ mod tests {
 
     fn new_test_pipes(cfg: &Config) -> Result<DualPipes<DefaultFileSystem>> {
         DualPipes::open(
-            &cfg.dir,
+            lock_dir(&cfg.dir)?,
             new_test_pipe(cfg, LogQueue::Append)?,
             new_test_pipe(cfg, LogQueue::Rewrite)?,
         )

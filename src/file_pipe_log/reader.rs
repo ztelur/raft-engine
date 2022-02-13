@@ -8,21 +8,24 @@ use crate::{Error, Result};
 use super::format::LogFileHeader;
 use super::log_file::LogFileReader;
 
-pub struct LogItemBatchFileReader<F: FileSystem> {
+/// A reusable reader over [`LogItemBatch`]s in a log file.
+pub(super) struct LogItemBatchFileReader<F: FileSystem> {
     file_id: Option<FileId>,
     reader: Option<LogFileReader<F>>,
     size: usize,
 
     buffer: Vec<u8>,
-    // File offset of the data contained in `buffer`.
+    /// File offset of the data contained in `buffer`.
     buffer_offset: usize,
-    // File offset of the end of last decoded log batch.
+    /// File offset of the end of last decoded log batch.
     valid_offset: usize,
 
+    /// The maximum number of bytes to prefetch.
     read_block_size: usize,
 }
 
 impl<F: FileSystem> LogItemBatchFileReader<F> {
+    /// Creates a new reader.
     pub fn new(read_block_size: usize) -> Self {
         Self {
             file_id: None,
@@ -37,6 +40,7 @@ impl<F: FileSystem> LogItemBatchFileReader<F> {
         }
     }
 
+    /// Opens a file that can be accessed through the given reader.
     pub fn open(&mut self, file_id: FileId, reader: LogFileReader<F>) -> Result<()> {
         self.file_id = Some(file_id);
         self.size = reader.file_size()?;
@@ -50,7 +54,7 @@ impl<F: FileSystem> LogItemBatchFileReader<F> {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    /// Closes any ongoing file access.
     pub fn reset(&mut self) {
         self.file_id = None;
         self.reader = None;
@@ -60,6 +64,8 @@ impl<F: FileSystem> LogItemBatchFileReader<F> {
         self.valid_offset = 0;
     }
 
+    /// Returns the next [`LogItemBatch`] in current opened file. Returns
+    /// `None` if there is no more data or no opened file.
     pub fn next(&mut self) -> Result<Option<LogItemBatch>> {
         if self.valid_offset < self.size {
             if self.valid_offset < LOG_BATCH_HEADER_LEN {
@@ -96,6 +102,11 @@ impl<F: FileSystem> LogItemBatchFileReader<F> {
         Ok(None)
     }
 
+    /// Reads some bytes starting at `offset`. Pulls bytes from the file into
+    /// its internal buffer if necessary, and attempts to prefetch in that
+    /// process.
+    ///
+    /// Returns a slice of internal buffer with specified size.
     fn peek(&mut self, offset: usize, size: usize, prefetch: usize) -> Result<&[u8]> {
         debug_assert!(offset >= self.buffer_offset);
         let reader = self.reader.as_mut().unwrap();
@@ -135,6 +146,8 @@ impl<F: FileSystem> LogItemBatchFileReader<F> {
         }
     }
 
+    /// Returns the offset to the end of verified and decoded data in current
+    /// file. Returns zero if there is no file opened.
     pub fn valid_offset(&self) -> usize {
         self.valid_offset
     }

@@ -1,5 +1,9 @@
 // Copyright (c) 2017-present, PingCAP, Inc. Licensed under Apache-2.0.
 
+//! A [`PipeLog`] implementation that stores data in filesystem.
+//!
+//! [`PipeLog`]: crate::pipe_log::PipeLog
+
 mod format;
 mod log_file;
 mod pipe;
@@ -10,10 +14,13 @@ pub use format::FileNameExt;
 pub use log_file::DefaultFileSystem;
 pub use log_file::LogFd;
 pub use pipe::DualPipes as FilePipeLog;
-pub use pipe_builder::{DualPipesBuilder as FilePipeLogBuilder, ReplayMachine};
+pub use pipe_builder::{
+    DefaultMachineFactory, DualPipesBuilder as FilePipeLogBuilder, ReplayMachine,
+};
 
-/// Public utilities used only for debugging purposes.
 pub mod debug {
+    //! A set of public utilities used for interacting with log files.
+
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -26,6 +33,12 @@ pub mod debug {
     use crate::pipe_log::FileId;
     use crate::{Error, Result};
 
+    use super::format::FileNameExt;
+    use super::log_file::{LogFd, LogFileReader, LogFileWriter};
+    use super::reader::LogItemBatchFileReader;
+
+    /// Opens a log file for write. When `create` is true, the specified file
+    /// will be created first if not exists.
     #[allow(dead_code)]
     pub fn build_file_writer<F: FileSystem>(
         file_system: &F,
@@ -41,7 +54,7 @@ pub mod debug {
         super::log_file::build_file_writer(file_system, path, fd, create)
     }
 
-    #[allow(dead_code)]
+    /// Opens a log file for read.
     pub fn build_file_reader<F: FileSystem>(
         file_system: &F,
         path: &Path,
@@ -50,7 +63,7 @@ pub mod debug {
         super::log_file::build_file_reader(file_system, path, fd)
     }
 
-    #[allow(dead_code)]
+    /// An iterator over the log items in log files.
     pub struct LogItemReader<F: FileSystem> {
         system: Arc<F>,
         files: VecDeque<(FileId, PathBuf)>,
@@ -67,8 +80,8 @@ pub mod debug {
     }
 
     impl<F: FileSystem> LogItemReader<F> {
-        #[allow(dead_code)]
-        pub fn new_file_reader(system: Arc<F>, file: &Path) -> Result<Self> {
+        /// Creates a new log item reader over one specified log file.
+        pub fn new_file_reader(builder: Arc<F>, file: &Path) -> Result<Self> {
             if !file.is_file() {
                 return Err(Error::InvalidArgument(format!(
                     "Not a file: {}",
@@ -91,8 +104,9 @@ pub mod debug {
             })
         }
 
-        #[allow(dead_code)]
-        pub fn new_directory_reader(system: Arc<F>, dir: &Path) -> Result<Self> {
+        /// Creates a new log item reader over all log files under the
+        /// specified directory.
+        pub fn new_directory_reader(builder: Arc<F>, dir: &Path) -> Result<Self> {
             if !dir.is_dir() {
                 return Err(Error::InvalidArgument(format!(
                     "Not a directory: {}",
@@ -123,8 +137,7 @@ pub mod debug {
             })
         }
 
-        #[allow(dead_code)]
-        pub fn next(&mut self) -> Option<Result<LogItem>> {
+        fn next(&mut self) -> Option<Result<LogItem>> {
             if self.items.is_empty() {
                 let next_batch = self.batch_reader.next();
                 match next_batch {
@@ -201,12 +214,14 @@ pub mod debug {
                 let file_path = file_id.build_file_path(dir.path());
                 // Write a file.
                 let mut writer =
-                    build_file_writer(file_system.as_ref(), &file_path, true /*create*/).unwrap();
+                    build_file_writer(file_system.as_ref(), &file_path, true /* create */).unwrap();
                 for batch in bs.iter_mut() {
                     let offset = writer.offset() as u64;
-                    let len = batch.finish_populate(1 /*compression_threshold*/).unwrap();
+                    let len = batch
+                        .finish_populate(1 /* compression_threshold */)
+                        .unwrap();
                     writer
-                        .write(batch.encoded_bytes(), 0 /*target_file_hint*/)
+                        .write(batch.encoded_bytes(), 0 /* target_file_hint */)
                         .unwrap();
                     batch.finish_write(FileBlockHandle {
                         id: file_id,
@@ -256,8 +271,12 @@ pub mod debug {
             let _corrupted_file = std::fs::File::create(&corrupted_file_path).unwrap();
             // An empty log file.
             let empty_file_path = FileId::dummy(LogQueue::Rewrite).build_file_path(dir.path());
-            let mut writer =
-                build_file_writer(file_system.as_ref(), &empty_file_path, true /*create*/).unwrap();
+            let mut writer = build_file_writer(
+                file_system.as_ref(),
+                &empty_file_path,
+                true, /* create */
+            )
+            .unwrap();
             writer.close().unwrap();
 
             assert!(LogItemReader::new_file_reader(file_system.clone(), dir.path()).is_err());
