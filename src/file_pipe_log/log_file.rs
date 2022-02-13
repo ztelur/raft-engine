@@ -15,6 +15,7 @@ use nix::unistd::{close, ftruncate, lseek, Whence};
 use nix::NixPath;
 
 use crate::file_builder::FileBuilder;
+use crate::file_system::{FileSystem, LowExt, WriteExt};
 use crate::metrics::*;
 use crate::FileBlockHandle;
 use crate::Result;
@@ -222,32 +223,50 @@ impl Seek for LogFile {
     }
 }
 
-pub fn build_file_writer<B: FileBuilder>(
-    builder: &B,
+impl LowExt for LogFile {
+    fn file_size(&self) -> IoResult<usize> {
+        self.inner.file_size()
+    }
+}
+
+impl WriteExt for LogFile {
+
+    fn truncate(&self, offset: usize) -> IoResult<()> {
+        self.inner.truncate(offset)
+    }
+
+    fn sync(&self) -> IoResult<()> {
+        self.inner.sync()
+    }
+
+    fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
+        self.inner.allocate(offset, size)
+    }
+}
+
+pub fn build_file_writer<F: FileSystem>(
+    system: &F,
     path: &Path,
-    fd: Arc<LogFd>,
+    fd: Arc<F::Handle>,
     create: bool,
 ) -> Result<LogFileWriter<B>> {
-    let raw_writer = LogFile::new(fd.clone());
-    let writer = builder.build_writer(path, raw_writer, create)?;
-    LogFileWriter::open(fd, writer)
+    let writer = system.new_writer( fd)?;
+    LogFileWriter::open(writer)
 }
 
 /// Append-only writer for log file.
-pub struct LogFileWriter<B: FileBuilder> {
-    fd: Arc<LogFd>,
-    writer: B::Writer<LogFile>,
+pub struct LogFileWriter<F: FileSystem> {
+    writer: F::Writer,
 
     written: usize,
     capacity: usize,
     last_sync: usize,
 }
 
-impl<B: FileBuilder> LogFileWriter<B> {
-    fn open(fd: Arc<LogFd>, writer: B::Writer<LogFile>) -> Result<Self> {
-        let file_size = fd.file_size()?;
+impl<F: FileSystem> LogFileWriter<F> {
+    fn open(writer: F::Writer) -> Result<Self> {
+        let file_size = writer.file_size()?;
         let mut f = Self {
-            fd,
             writer,
             written: file_size,
             capacity: file_size,
@@ -277,7 +296,7 @@ impl<B: FileBuilder> LogFileWriter<B> {
 
     pub fn truncate(&mut self) -> Result<()> {
         if self.written < self.capacity {
-            self.fd.truncate(self.written)?;
+            self.writer.truncate(self.written)?;
             self.capacity = self.written;
         }
         Ok(())
@@ -294,7 +313,7 @@ impl<B: FileBuilder> LogFileWriter<B> {
                     target_size_hint.saturating_sub(self.capacity),
                 ),
             );
-            self.fd.allocate(self.capacity, alloc)?;
+            self.writer.allocate(self.capacity, alloc)?;
             self.capacity += alloc;
         }
         self.writer.write_all(buf)?;
@@ -305,7 +324,7 @@ impl<B: FileBuilder> LogFileWriter<B> {
     pub fn sync(&mut self) -> Result<()> {
         if self.last_sync < self.written {
             let _t = StopWatch::new(&LOG_SYNC_DURATION_HISTOGRAM);
-            self.fd.sync()?;
+            self.writer.sync()?;
             self.last_sync = self.written;
         }
         Ok(())
@@ -322,28 +341,25 @@ impl<B: FileBuilder> LogFileWriter<B> {
     }
 }
 
-pub fn build_file_reader<B: FileBuilder>(
-    builder: &B,
+pub fn build_file_reader<F: FileSystem>(
+    system: &F,
     path: &Path,
-    fd: Arc<LogFd>,
+    fd: Arc<F::Handle>,
 ) -> Result<LogFileReader<B>> {
-    let raw_reader = LogFile::new(fd.clone());
-    let reader = builder.build_reader(path, raw_reader)?;
-    LogFileReader::open(fd, reader)
+    let reader = system.new_reader(fd)?;
+    LogFileReader::open(reader)
 }
 
 /// Random-access reader for log file.
-pub struct LogFileReader<B: FileBuilder> {
-    fd: Arc<LogFd>,
-    reader: B::Reader<LogFile>,
+pub struct LogFileReader<F: FileSystem> {
+    reader: F::Reader,
 
     offset: usize,
 }
 
-impl<B: FileBuilder> LogFileReader<B> {
-    fn open(fd: Arc<LogFd>, reader: B::Reader<LogFile>) -> Result<Self> {
+impl<F: FileSystem> LogFileReader<F> {
+    fn open(reader: Arc<F::Reader>) -> Result<Self> {
         Ok(Self {
-            fd,
             reader,
             // Set to an invalid offset to force a reseek at first read.
             offset: usize::MAX,
@@ -369,6 +385,31 @@ impl<B: FileBuilder> LogFileReader<B> {
 
     #[inline]
     pub fn file_size(&self) -> Result<usize> {
-        Ok(self.fd.file_size()?)
+        Ok(self.reader.file_size()?)
     }
 }
+
+pub struct DefaultFileSystem {}
+
+impl FileSystem for DefaultFileSystem {
+    type Handle = LogFd;
+    type Reader = LogFile;
+    type Writer = LogFile;
+
+    fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
+        LogFd::create(path)
+    }
+
+    fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
+        LogFd::open(path)
+    }
+
+    fn new_reader(&self, handle: Arc<LogFd>) -> IoResult<LogFile> {
+        Ok(LogFile::new(handle.clone()))
+    }
+
+    fn new_writer(&self, handle: Arc<LogFd>) -> IoResult<LogFile> {
+        Ok(LogFile::new(handle.clone()))
+    }
+}
+

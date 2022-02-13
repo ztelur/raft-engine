@@ -59,9 +59,6 @@ impl LowExt for LogFileWithFileSystem {
 impl ReadExt for LogFileWithFileSystem {}
 
 impl WriteExt for LogFileWithFileSystem {
-    fn finish(&self) -> IoResult<()> {
-        self.inner.sync()
-    }
 
     fn truncate(&self, offset: usize) -> IoResult<()> {
         self.inner.truncate(offset)
@@ -233,28 +230,3 @@ impl<F: FileSystem> LogFileWriterWithFileSystem<F> {
     }
 }
 
-pub struct DefaultFileSystem {}
-
-impl FileSystem for DefaultFileSystem {
-    type Handle = LogFd;
-    type Reader = LogFileWithFileSystem;
-    type Writer = LogFileWithFileSystem;
-
-    fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
-        // LogFd::create(&path) error
-        todo!()
-    }
-
-    fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
-        // LogFd::open(&path)
-        todo!()
-    }
-
-    fn new_reader(&self, handle: Arc<LogFd>) -> IoResult<LogFileWithFileSystem> {
-        Ok(LogFileWithFileSystem::new(handle.clone()))
-    }
-
-    fn new_writer(&self, handle: Arc<LogFd>) -> IoResult<LogFileWithFileSystem> {
-        Ok(LogFileWithFileSystem::new(handle.clone()))
-    }
-}

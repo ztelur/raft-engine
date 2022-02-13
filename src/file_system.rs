@@ -23,7 +23,6 @@ pub trait LowExt {
 
 /// WriteExt is writer extension api
 pub trait WriteExt: LowExt {
-    fn finish(&self) -> Result<()>;
     fn truncate(&self, offset: usize) -> Result<()>;
     fn sync(&self) -> Result<()>;
     fn allocate(&self, offset: usize, size: usize) -> Result<()>;
