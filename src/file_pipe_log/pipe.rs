@@ -359,8 +359,8 @@ impl<F: FileSystem> PipeLog for DualPipes<F> {
 
 #[cfg(test)]
 mod tests {
-    use tempfile::Builder;
     use crate::DefaultFileSystem;
+    use tempfile::Builder;
 
     use super::super::format::LogFileHeader;
     use super::*;

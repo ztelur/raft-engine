@@ -13,10 +13,10 @@ use crate::event_listener::EventListener;
 use crate::file_system::FileSystem;
 use crate::log_batch::LogItemBatch;
 use crate::pipe_log::{FileId, FileSeq, LogQueue};
-use crate::{Result};
+use crate::Result;
 
 use super::format::FileNameExt;
-use super::log_file::{build_file_reader};
+use super::log_file::build_file_reader;
 use super::pipe::{DualPipes, SinglePipe};
 use super::reader::LogItemBatchFileReader;
 use crate::file_system::Handle;

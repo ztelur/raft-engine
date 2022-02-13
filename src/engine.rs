@@ -392,7 +392,7 @@ where
 mod tests {
     use super::*;
     use crate::file_pipe_log::{FileNameExt, LogFd};
-    use crate::file_system::{LowExt, ReadExt, WriteExt};
+    use crate::file_system::{Handle, LowExt, ReadExt, WriteExt};
     use crate::test_util::{generate_entries, PanicGuard};
     use crate::util::ReadableSize;
     use kvproto::raft_serverpb::RaftLocalState;
@@ -987,7 +987,7 @@ mod tests {
 
         impl LowExt for TestFile {
             fn file_size(&self) -> IoResult<usize> {
-                todo!()
+                self.inner.file_size()
             }
         }
 
@@ -995,15 +995,15 @@ mod tests {
 
         impl WriteExt for TestFile {
             fn truncate(&self, offset: usize) -> IoResult<()> {
-                todo!()
+                self.inner.truncate(offset)
             }
 
             fn sync(&self) -> IoResult<()> {
-                todo!()
+                self.inner.sync()
             }
 
             fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
-                todo!()
+                self.inner.allocate(offset, size)
             }
         }
 
