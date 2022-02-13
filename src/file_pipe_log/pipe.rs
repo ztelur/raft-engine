@@ -18,7 +18,7 @@ use crate::pipe_log::{FileBlockHandle, FileId, FileSeq, LogQueue, PipeLog};
 use crate::{Error, Result};
 
 use super::format::FileNameExt;
-use super::log_file::{build_file_reader, build_file_writer, LogFd, LogFileWriter};
+use super::log_file::{build_file_reader, build_file_writer, LogFileWriter};
 
 struct FileCollection<F: FileSystem> {
     first_seq: FileSeq,
@@ -301,7 +301,7 @@ impl<F: FileSystem> SinglePipe<F> {
 
 /// A [`PipeLog`] implementation that stores data in filesystem.
 pub struct DualPipes<F: FileSystem> {
-    pipes: [SinglePipe<B>; 2],
+    pipes: [SinglePipe<F>; 2],
 
     _dir_lock: File,
 }

@@ -38,7 +38,7 @@ fn from_nix_error(e: nix::Error, custom: &'static str) -> std::io::Error {
 /// supported on *Unix*, and primarily optimized for *Linux*.
 ///
 /// All [`LogFd`] instances are opened with read and write permission.
-pub(super) struct LogFd(RawFd);
+pub struct LogFd(RawFd);
 
 impl LogFd {
     /// Opens a file with the given `path`.
@@ -206,7 +206,7 @@ impl Drop for LogFd {
 
 /// A low-level file adapted for standard interfaces including [`Seek`],
 /// [`Write`] and [`Read`].
-pub(super) struct LogFile {
+pub struct LogFile {
     inner: Arc<LogFd>,
     offset: usize,
 }

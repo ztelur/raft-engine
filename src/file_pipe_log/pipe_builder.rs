@@ -168,9 +168,9 @@ impl<F: FileSystem> DualPipesBuilder<F> {
     /// Reads through log items in all available log files, and replays them to
     /// specific [`ReplayMachine`]s that can be constructed via
     /// `machine_factory`.
-    pub fn recover<M: ReplayMachine, F: Factory<M>>(
+    pub fn recover<M: ReplayMachine, FA: Factory<M>>(
         &mut self,
-        machine_factory: &F,
+        machine_factory: &FA,
     ) -> Result<(M, M)> {
         let threads = self.cfg.recovery_threads;
         let (append_concurrency, rewrite_concurrency) =
@@ -197,10 +197,10 @@ impl<F: FileSystem> DualPipesBuilder<F> {
     /// Reads through log items in all available log files of the specified
     /// queue, and replays them to specific [`ReplayMachine`]s that can be
     /// constructed via `machine_factory`.
-    pub fn recover_queue<M: ReplayMachine, F: Factory<M>>(
+    pub fn recover_queue<M: ReplayMachine, FA: Factory<M>>(
         &self,
         queue: LogQueue,
-        replay_machine_factory: &F,
+        replay_machine_factory: &FA,
         concurrency: usize,
     ) -> Result<M> {
         let files = if queue == LogQueue::Append {
@@ -286,7 +286,7 @@ impl<F: FileSystem> DualPipesBuilder<F> {
     }
 
     /// Builds a [`DualPipes`] that contains all available log files.
-    pub fn finish(self) -> Result<DualPipes<B>> {
+    pub fn finish(self) -> Result<DualPipes<F>> {
         let appender = self.build_pipe(LogQueue::Append)?;
         let rewriter = self.build_pipe(LogQueue::Rewrite)?;
         DualPipes::open(self.dir_lock.unwrap(), appender, rewriter)
