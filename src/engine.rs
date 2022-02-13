@@ -11,9 +11,9 @@ use protobuf::{parse_from_bytes, Message};
 use crate::config::{Config, RecoveryMode};
 use crate::consistency::ConsistencyChecker;
 use crate::event_listener::EventListener;
-use crate::file_builder::*;
 use crate::file_pipe_log::debug::LogItemReader;
-use crate::file_pipe_log::{FilePipeLog, FilePipeLogBuilder};
+use crate::file_pipe_log::{DefaultFileSystem, FilePipeLog, FilePipeLogBuilder};
+use crate::file_system::FileSystem;
 use crate::log_batch::{Command, LogBatch, MessageExt};
 use crate::memtable::{EntryIndex, MemTableAccessor, MemTableRecoverContext};
 use crate::metrics::*;
@@ -22,9 +22,9 @@ use crate::purge::{PurgeHook, PurgeManager};
 use crate::write_barrier::{WriteBarrier, Writer};
 use crate::{Error, GlobalStats, Result};
 
-pub struct Engine<B = DefaultFileBuilder, P = FilePipeLog<B>>
+pub struct Engine<F = DefaultFileSystem, P = FilePipeLog<F>>
 where
-    B: FileBuilder,
+    F: FileSystem,
     P: PipeLog,
 {
     cfg: Arc<Config>,
@@ -37,45 +37,43 @@ where
 
     write_barrier: WriteBarrier<LogBatch, Result<FileBlockHandle>>,
 
-    _phantom: PhantomData<B>,
+    _phantom: PhantomData<F>,
 }
 
-impl Engine<DefaultFileBuilder, FilePipeLog<DefaultFileBuilder>> {
-    pub fn open(
-        cfg: Config,
-    ) -> Result<Engine<DefaultFileBuilder, FilePipeLog<DefaultFileBuilder>>> {
+impl Engine<DefaultFileSystem, FilePipeLog<DefaultFileSystem>> {
+    pub fn open(cfg: Config) -> Result<Engine<DefaultFileSystem, FilePipeLog<DefaultFileSystem>>> {
         Self::open_with_listeners(cfg, vec![])
     }
 
     pub fn open_with_listeners(
         cfg: Config,
         listeners: Vec<Arc<dyn EventListener>>,
-    ) -> Result<Engine<DefaultFileBuilder, FilePipeLog<DefaultFileBuilder>>> {
-        Self::open_with(cfg, Arc::new(DefaultFileBuilder), listeners)
+    ) -> Result<Engine<DefaultFileSystem, FilePipeLog<DefaultFileSystem>>> {
+        Self::open_with(cfg, Arc::new(DefaultFileSystem), listeners)
     }
 }
 
-impl<B> Engine<B, FilePipeLog<B>>
+impl<F> Engine<F, FilePipeLog<F>>
 where
-    B: FileBuilder,
+    F: FileSystem,
 {
-    pub fn open_with_file_builder(
+    pub fn open_with_file_system(
         cfg: Config,
-        file_builder: Arc<B>,
-    ) -> Result<Engine<B, FilePipeLog<B>>> {
-        Self::open_with(cfg, file_builder, vec![])
+        file_system: Arc<F>,
+    ) -> Result<Engine<F, FilePipeLog<F>>> {
+        Self::open_with(cfg, file_system, vec![])
     }
 
     pub fn open_with(
         mut cfg: Config,
-        file_builder: Arc<B>,
+        file_system: Arc<F>,
         mut listeners: Vec<Arc<dyn EventListener>>,
-    ) -> Result<Engine<B, FilePipeLog<B>>> {
+    ) -> Result<Engine<F, FilePipeLog<F>>> {
         cfg.sanitize()?;
         listeners.push(Arc::new(PurgeHook::new()) as Arc<dyn EventListener>);
 
         let start = Instant::now();
-        let mut builder = FilePipeLogBuilder::new(cfg.clone(), file_builder, listeners.clone());
+        let mut builder = FilePipeLogBuilder::new(cfg.clone(), file_system, listeners.clone());
         builder.scan()?;
         let (append, rewrite) = builder.recover::<MemTableRecoverContext>()?;
         let pipe_log = Arc::new(builder.finish()?);
@@ -105,9 +103,9 @@ where
     }
 }
 
-impl<B, P> Engine<B, P>
+impl<F, P> Engine<F, P>
 where
-    B: FileBuilder,
+    F: FileSystem,
     P: PipeLog,
 {
     /// Writes the content of `log_batch` into the engine and returns written bytes.
@@ -283,9 +281,9 @@ where
     }
 }
 
-impl Engine<DefaultFileBuilder, FilePipeLog<DefaultFileBuilder>> {
+impl Engine<DefaultFileSystem, FilePipeLog<DefaultFileSystem>> {
     pub fn consistency_check(path: &Path) -> Result<Vec<(u64, u64)>> {
-        Self::consistency_check_with_file_builder(path, Arc::new(DefaultFileBuilder))
+        Self::consistency_check_with_file_system(path, Arc::new(DefaultFileSystem))
     }
 
     pub fn unsafe_truncate(
@@ -294,29 +292,29 @@ impl Engine<DefaultFileBuilder, FilePipeLog<DefaultFileBuilder>> {
         queue: Option<LogQueue>,
         raft_groups: &[u64],
     ) -> Result<()> {
-        Self::unsafe_truncate_with_file_builder(
+        Self::unsafe_truncate_with_file_system(
             path,
             mode,
             queue,
             raft_groups,
-            Arc::new(DefaultFileBuilder),
+            Arc::new(DefaultFileSystem),
         )
     }
 
-    pub fn dump(path: &Path) -> Result<LogItemReader<DefaultFileBuilder>> {
-        Self::dump_with_file_builder(path, Arc::new(DefaultFileBuilder))
+    pub fn dump(path: &Path) -> Result<LogItemReader<DefaultFileSystem>> {
+        Self::dump_with_file_system(path, Arc::new(DefaultFileSystem))
     }
 }
 
-impl<B> Engine<B, FilePipeLog<B>>
+impl<F> Engine<F, FilePipeLog<F>>
 where
-    B: FileBuilder,
+    F: FileSystem,
 {
     /// Returns a list of corrupted Raft groups, including their ids and last valid
     /// log index. Head or tail corruption cannot be detected.
-    pub fn consistency_check_with_file_builder(
+    pub fn consistency_check_with_file_system(
         path: &Path,
-        file_builder: Arc<B>,
+        file_system: Arc<F>,
     ) -> Result<Vec<(u64, u64)>> {
         if !path.exists() {
             return Err(Error::InvalidArgument(format!(
@@ -330,7 +328,7 @@ where
             recovery_mode: RecoveryMode::TolerateAnyCorruption,
             ..Default::default()
         };
-        let mut builder = FilePipeLogBuilder::new(cfg, file_builder, Vec::new());
+        let mut builder = FilePipeLogBuilder::new(cfg, file_system, Vec::new());
         builder.scan()?;
         let (append, rewrite) = builder.recover::<ConsistencyChecker>()?;
         let mut map = rewrite.finish();
@@ -344,18 +342,18 @@ where
 
     /// Truncates Raft groups to remove possible corruptions.
     #[allow(unused_variables)]
-    pub fn unsafe_truncate_with_file_builder(
+    pub fn unsafe_truncate_with_file_system(
         path: &Path,
         mode: &str,
         queue: Option<LogQueue>,
         raft_groups: &[u64],
-        file_builder: Arc<B>,
+        file_system: Arc<F>,
     ) -> Result<()> {
         todo!();
     }
 
     /// Dumps all operations.
-    pub fn dump_with_file_builder(path: &Path, file_builder: Arc<B>) -> Result<LogItemReader<B>> {
+    pub fn dump_with_file_system(path: &Path, file_system: Arc<F>) -> Result<LogItemReader<F>> {
         if !path.exists() {
             return Err(Error::InvalidArgument(format!(
                 "raft-engine directory or file '{}' does not exist.",
@@ -364,9 +362,9 @@ where
         }
 
         if path.is_dir() {
-            LogItemReader::new_directory_reader(file_builder, path)
+            LogItemReader::new_directory_reader(file_system, path)
         } else {
-            LogItemReader::new_file_reader(file_builder, path)
+            LogItemReader::new_file_reader(file_system, path)
         }
     }
 }
@@ -393,15 +391,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_pipe_log::FileNameExt;
+    use crate::file_pipe_log::{FileNameExt, LogFd};
+    use crate::file_system::{LowExt, ReadExt, WriteExt};
     use crate::test_util::{generate_entries, PanicGuard};
     use crate::util::ReadableSize;
     use kvproto::raft_serverpb::RaftLocalState;
     use raft::eraftpb::Entry;
     use std::path::PathBuf;
 
-    type RaftLogEngine<B = DefaultFileBuilder> = Engine<B>;
-    impl<B: FileBuilder> RaftLogEngine<B> {
+    type RaftLogEngine<F = DefaultFileSystem> = Engine<F>;
+    impl<F: FileSystem> RaftLogEngine<F> {
         fn append(&self, rid: u64, start_index: u64, end_index: u64, data: Option<&[u8]>) {
             let entries = generate_entries(start_index, end_index, data);
             if !entries.is_empty() {
@@ -448,14 +447,14 @@ mod tests {
 
         fn reopen(self) -> Self {
             let cfg: Config = self.cfg.as_ref().clone();
-            let file_builder = self.pipe_log.file_builder();
+            let file_system = self.pipe_log.file_system();
             let mut listeners = self.listeners.clone();
             listeners.pop();
             drop(self);
-            RaftLogEngine::open_with(cfg, file_builder, listeners).unwrap()
+            RaftLogEngine::open_with(cfg, file_system, listeners).unwrap()
         }
 
-        fn scan<F: Fn(u64, LogQueue, &[u8])>(&self, rid: u64, start: u64, end: u64, reader: F) {
+        fn scan<F1: Fn(u64, LogQueue, &[u8])>(&self, rid: u64, start: u64, end: u64, reader: F1) {
             let mut entries = Vec::new();
             self.fetch_entries_to::<Entry>(
                 rid,
@@ -978,75 +977,100 @@ mod tests {
     }
 
     #[test]
-    fn test_file_builder() {
+    fn test_file_system() {
         use std::io::{Read, Result, Result as IoResult, Seek, SeekFrom, Write};
-        struct TestFile<F> {
-            inner: F,
-            offset: u64,
+
+        struct TestFile {
+            inner: Arc<LogFd>,
+            offset: usize,
         }
 
-        impl<F: Write> Write for TestFile<F> {
+        impl LowExt for TestFile {
+            fn file_size(&self) -> IoResult<usize> {
+                todo!()
+            }
+        }
+
+        impl ReadExt for TestFile {}
+
+        impl WriteExt for TestFile {
+            fn truncate(&self, offset: usize) -> IoResult<()> {
+                todo!()
+            }
+
+            fn sync(&self) -> IoResult<()> {
+                todo!()
+            }
+
+            fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
+                todo!()
+            }
+        }
+
+        impl Write for TestFile {
             fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
                 let mut new_buf = buf.to_owned();
                 for c in &mut new_buf {
                     *c = c.wrapping_add(1);
                 }
-                let len = self.inner.write(&new_buf)?;
-                self.offset += len as u64;
+                let len = self.inner.write(self.offset, &new_buf)?;
+                self.offset += len;
                 Ok(len)
             }
 
             fn flush(&mut self) -> IoResult<()> {
-                self.inner.flush()
+                Ok(())
             }
         }
 
-        impl<F: Read> Read for TestFile<F> {
+        impl Read for TestFile {
             fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-                let len = self.inner.read(buf)?;
+                let len = self.inner.read(self.offset, buf)?;
                 for c in buf {
                     *c = c.wrapping_sub(1);
                 }
-                self.offset += len as u64;
+                self.offset += len;
                 Ok(len)
             }
         }
 
-        impl<F: Seek> Seek for TestFile<F> {
+        impl Seek for TestFile {
             fn seek(&mut self, pos: SeekFrom) -> IoResult<u64> {
-                self.offset = self.inner.seek(pos)?;
-                Ok(self.offset)
+                match pos {
+                    SeekFrom::Start(offset) => self.offset = offset as usize,
+                    SeekFrom::Current(i) => self.offset = (self.offset as i64 + i) as usize,
+                    SeekFrom::End(i) => self.offset = (self.inner.file_size()? as i64 + i) as usize,
+                }
+                Ok(self.offset as u64)
             }
         }
 
-        struct TestFileBuilder;
+        struct TestFileSystem;
 
-        impl FileBuilder for TestFileBuilder {
-            type Reader<R: Seek + Read + Send> = TestFile<R>;
-            type Writer<W: Seek + Write + Send> = TestFile<W>;
+        impl FileSystem for TestFileSystem {
+            type Handle = LogFd;
+            type Reader = TestFile;
+            type Writer = TestFile;
 
-            fn build_reader<R>(&self, _path: &Path, inner: R) -> Result<Self::Reader<R>>
-            where
-                R: Seek + Read + Send,
-            {
+            fn create<P: AsRef<Path>>(&self, path: P) -> Result<LogFd> {
+                LogFd::create(path.as_ref())
+            }
+
+            fn open<P: AsRef<Path>>(&self, path: P) -> Result<LogFd> {
+                LogFd::open(path.as_ref())
+            }
+
+            fn new_reader(&self, inner: Arc<LogFd>) -> Result<Self::Reader> {
                 Ok(TestFile { inner, offset: 0 })
             }
 
-            fn build_writer<W>(
-                &self,
-                _path: &Path,
-                inner: W,
-                _create: bool,
-            ) -> Result<Self::Writer<W>>
-            where
-                W: Seek + Write + Send,
-            {
+            fn new_writer(&self, inner: Arc<LogFd>) -> Result<Self::Writer> {
                 Ok(TestFile { inner, offset: 0 })
             }
         }
 
         let dir = tempfile::Builder::new()
-            .prefix("test_file_builder")
+            .prefix("test_file_system")
             .tempdir()
             .unwrap();
         let cfg = Config {
@@ -1054,7 +1078,7 @@ mod tests {
             ..Default::default()
         };
 
-        let engine = RaftLogEngine::open_with_file_builder(cfg, Arc::new(TestFileBuilder)).unwrap();
+        let engine = RaftLogEngine::open_with_file_system(cfg, Arc::new(TestFileSystem)).unwrap();
         let data = vec![b'x'; 128];
         for rid in 10..20 {
             let index = rid * 2;
@@ -1170,7 +1194,7 @@ mod tests {
         };
 
         let engine =
-            RaftLogEngine::open_with_file_builder(cfg, Arc::new(DefaultFileBuilder)).unwrap();
+            RaftLogEngine::open_with_file_system(cfg, Arc::new(DefaultFileSystem)).unwrap();
         for bs in batches.iter_mut() {
             for batch in bs.iter_mut() {
                 engine.write(batch, false).unwrap();

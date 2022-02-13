@@ -40,7 +40,6 @@ mod consistency;
 mod engine;
 mod errors;
 mod event_listener;
-mod file_builder;
 mod file_pipe_log;
 mod file_system;
 mod log_batch;
@@ -53,14 +52,15 @@ mod test_util;
 mod util;
 mod write_barrier;
 
+use crate::file_pipe_log::DefaultFileSystem;
 pub use config::{Config, RecoveryMode};
 pub use errors::{Error, Result};
 pub use event_listener::EventListener;
-pub use file_builder::FileBuilder;
 pub use log_batch::{Command, LogBatch, MessageExt};
 pub use pipe_log::{FileBlockHandle, FileId, FileSeq, LogQueue};
 pub use util::ReadableSize;
-pub type Engine<FileBuilder = file_builder::DefaultFileBuilder> = engine::Engine<FileBuilder>;
+
+pub type Engine<FileSystem = DefaultFileSystem> = engine::Engine<FileSystem>;
 
 #[derive(Default)]
 pub struct GlobalStats {

@@ -13,38 +13,38 @@ use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::config::Config;
 use crate::event_listener::EventListener;
-use crate::file_builder::FileBuilder;
+use crate::file_system::FileSystem;
 use crate::metrics::*;
 use crate::pipe_log::{FileBlockHandle, FileId, FileSeq, LogQueue, PipeLog};
 use crate::{Error, Result};
 
 use super::format::{lock_file_path, FileNameExt};
-use super::log_file::{build_file_reader, build_file_writer, LogFd, LogFileWriter};
+use super::log_file::{build_file_reader, build_file_writer, LogFileWriter};
 
-struct FileCollection {
+struct FileCollection<F: FileSystem> {
     first_seq: FileSeq,
     active_seq: FileSeq,
-    fds: VecDeque<Arc<LogFd>>,
+    fds: VecDeque<Arc<F::Handle>>,
 }
 
-struct ActiveFile<B: FileBuilder> {
+struct ActiveFile<F: FileSystem> {
     seq: FileSeq,
-    writer: LogFileWriter<B>,
+    writer: LogFileWriter<F>,
 }
 
-pub struct SinglePipe<B: FileBuilder> {
+pub struct SinglePipe<F: FileSystem> {
     queue: LogQueue,
     dir: String,
     target_file_size: usize,
     bytes_per_sync: usize,
-    file_builder: Arc<B>,
+    file_system: Arc<F>,
     listeners: Vec<Arc<dyn EventListener>>,
 
-    files: CachePadded<RwLock<FileCollection>>,
-    active_file: CachePadded<Mutex<ActiveFile<B>>>,
+    files: CachePadded<RwLock<FileCollection<F>>>,
+    active_file: CachePadded<Mutex<ActiveFile<F>>>,
 }
 
-impl<B: FileBuilder> Drop for SinglePipe<B> {
+impl<F: FileSystem> Drop for SinglePipe<F> {
     fn drop(&mut self) {
         let mut active_file = self.active_file.lock();
         if let Err(e) = active_file.writer.close() {
@@ -53,14 +53,14 @@ impl<B: FileBuilder> Drop for SinglePipe<B> {
     }
 }
 
-impl<B: FileBuilder> SinglePipe<B> {
+impl<F: FileSystem> SinglePipe<F> {
     pub fn open(
         cfg: &Config,
-        file_builder: Arc<B>,
+        file_system: Arc<F>,
         listeners: Vec<Arc<dyn EventListener>>,
         queue: LogQueue,
         mut first_seq: FileSeq,
-        mut fds: VecDeque<Arc<LogFd>>,
+        mut fds: VecDeque<Arc<F::Handle>>,
     ) -> Result<Self> {
         let create_file = first_seq == 0;
         let active_seq = if create_file {
@@ -69,7 +69,7 @@ impl<B: FileBuilder> SinglePipe<B> {
                 queue,
                 seq: first_seq,
             };
-            let fd = Arc::new(LogFd::create(&file_id.build_file_path(&cfg.dir))?);
+            let fd = Arc::new(file_system.create(&file_id.build_file_path(&cfg.dir))?);
             fds.push_back(fd);
             first_seq
         } else {
@@ -90,7 +90,7 @@ impl<B: FileBuilder> SinglePipe<B> {
         let active_file = ActiveFile {
             seq: active_seq,
             writer: build_file_writer(
-                file_builder.as_ref(),
+                file_system.as_ref(),
                 &file_id.build_file_path(&cfg.dir),
                 active_fd,
                 create_file,
@@ -103,7 +103,7 @@ impl<B: FileBuilder> SinglePipe<B> {
             dir: cfg.dir.clone(),
             target_file_size: cfg.target_file_size.0 as usize,
             bytes_per_sync: cfg.bytes_per_sync.0 as usize,
-            file_builder,
+            file_system,
             listeners,
 
             files: CachePadded::new(RwLock::new(FileCollection {
@@ -123,7 +123,7 @@ impl<B: FileBuilder> SinglePipe<B> {
         Ok(())
     }
 
-    fn get_fd(&self, file_seq: FileSeq) -> Result<Arc<LogFd>> {
+    fn get_fd(&self, file_seq: FileSeq) -> Result<Arc<F::Handle>> {
         let files = self.files.read();
         if file_seq < files.first_seq || file_seq > files.active_seq {
             return Err(Error::Corruption("file seqno out of range".to_owned()));
@@ -131,7 +131,7 @@ impl<B: FileBuilder> SinglePipe<B> {
         Ok(files.fds[(file_seq - files.first_seq) as usize].clone())
     }
 
-    fn rotate_imp(&self, active_file: &mut MutexGuard<ActiveFile<B>>) -> Result<()> {
+    fn rotate_imp(&self, active_file: &mut MutexGuard<ActiveFile<F>>) -> Result<()> {
         let _t = StopWatch::new(&LOG_ROTATE_DURATION_HISTOGRAM);
         let seq = active_file.seq + 1;
         debug_assert!(seq > 1);
@@ -141,12 +141,12 @@ impl<B: FileBuilder> SinglePipe<B> {
             seq,
         };
         let path = file_id.build_file_path(&self.dir);
-        let fd = Arc::new(LogFd::create(&path)?);
+        let fd = Arc::new(self.file_system.create(&path)?);
         self.sync_dir()?;
         let new_file = ActiveFile {
             seq,
             writer: build_file_writer(
-                self.file_builder.as_ref(),
+                self.file_system.as_ref(),
                 &path,
                 fd.clone(),
                 true, /*create*/
@@ -181,11 +181,11 @@ impl<B: FileBuilder> SinglePipe<B> {
     }
 }
 
-impl<B: FileBuilder> SinglePipe<B> {
+impl<F: FileSystem> SinglePipe<F> {
     fn read_bytes(&self, handle: FileBlockHandle) -> Result<Vec<u8>> {
         let fd = self.get_fd(handle.id.seq)?;
         let mut reader = build_file_reader(
-            self.file_builder.as_ref(),
+            self.file_system.as_ref(),
             &handle.id.build_file_path(&self.dir),
             fd,
         )?;
@@ -289,14 +289,14 @@ impl<B: FileBuilder> SinglePipe<B> {
     }
 }
 
-pub struct DualPipes<B: FileBuilder> {
-    pipes: [SinglePipe<B>; 2],
+pub struct DualPipes<F: FileSystem> {
+    pipes: [SinglePipe<F>; 2],
 
     _lock_file: File,
 }
 
-impl<B: FileBuilder> DualPipes<B> {
-    pub fn open(dir: &str, appender: SinglePipe<B>, rewriter: SinglePipe<B>) -> Result<Self> {
+impl<F: FileSystem> DualPipes<F> {
+    pub fn open(dir: &str, appender: SinglePipe<F>, rewriter: SinglePipe<F>) -> Result<Self> {
         let lock_file = File::create(lock_file_path(dir))?;
         lock_file.try_lock_exclusive().map_err(|e| {
             Error::Other(box_err!(
@@ -315,12 +315,12 @@ impl<B: FileBuilder> DualPipes<B> {
     }
 
     #[cfg(test)]
-    pub fn file_builder(&self) -> Arc<B> {
-        self.pipes[0].file_builder.clone()
+    pub fn file_system(&self) -> Arc<F> {
+        self.pipes[0].file_system.clone()
     }
 }
 
-impl<B: FileBuilder> PipeLog for DualPipes<B> {
+impl<F: FileSystem> PipeLog for DualPipes<F> {
     #[inline]
     fn read_bytes(&self, handle: FileBlockHandle) -> Result<Vec<u8>> {
         self.pipes[handle.id.queue as usize].read_bytes(handle)
@@ -360,16 +360,16 @@ impl<B: FileBuilder> PipeLog for DualPipes<B> {
 #[cfg(test)]
 mod tests {
     use tempfile::Builder;
+    use crate::DefaultFileSystem;
 
     use super::super::format::LogFileHeader;
     use super::*;
-    use crate::file_builder::DefaultFileBuilder;
     use crate::util::ReadableSize;
 
-    fn new_test_pipe(cfg: &Config, queue: LogQueue) -> Result<SinglePipe<DefaultFileBuilder>> {
+    fn new_test_pipe(cfg: &Config, queue: LogQueue) -> Result<SinglePipe<DefaultFileSystem>> {
         SinglePipe::open(
             cfg,
-            Arc::new(DefaultFileBuilder),
+            Arc::new(DefaultFileSystem),
             Vec::new(),
             queue,
             0,
@@ -377,7 +377,7 @@ mod tests {
         )
     }
 
-    fn new_test_pipes(cfg: &Config) -> Result<DualPipes<DefaultFileBuilder>> {
+    fn new_test_pipes(cfg: &Config) -> Result<DualPipes<DefaultFileSystem>> {
         DualPipes::open(
             &cfg.dir,
             new_test_pipe(cfg, LogQueue::Append)?,

@@ -10,15 +10,16 @@ use rayon::prelude::*;
 
 use crate::config::{Config, RecoveryMode};
 use crate::event_listener::EventListener;
-use crate::file_builder::FileBuilder;
+use crate::file_system::FileSystem;
 use crate::log_batch::LogItemBatch;
 use crate::pipe_log::{FileId, FileSeq, LogQueue};
-use crate::Result;
+use crate::{Result};
 
 use super::format::FileNameExt;
-use super::log_file::{build_file_reader, LogFd};
+use super::log_file::{build_file_reader};
 use super::pipe::{DualPipes, SinglePipe};
 use super::reader::LogItemBatchFileReader;
+use crate::file_system::Handle;
 
 pub trait ReplayMachine: Send + Default {
     fn replay(&mut self, item_batch: LogItemBatch, file_id: FileId) -> Result<()>;
@@ -26,26 +27,26 @@ pub trait ReplayMachine: Send + Default {
     fn merge(&mut self, rhs: Self, queue: LogQueue) -> Result<()>;
 }
 
-struct FileToRecover {
+struct FileToRecover<F: FileSystem> {
     seq: FileSeq,
     path: PathBuf,
-    fd: Arc<LogFd>,
+    fd: Arc<F::Handle>,
 }
 
-pub struct DualPipesBuilder<B: FileBuilder> {
+pub struct DualPipesBuilder<F: FileSystem> {
     cfg: Config,
-    file_builder: Arc<B>,
+    file_system: Arc<F>,
     listeners: Vec<Arc<dyn EventListener>>,
 
-    append_files: Vec<FileToRecover>,
-    rewrite_files: Vec<FileToRecover>,
+    append_files: Vec<FileToRecover<F>>,
+    rewrite_files: Vec<FileToRecover<F>>,
 }
 
-impl<B: FileBuilder> DualPipesBuilder<B> {
-    pub fn new(cfg: Config, file_builder: Arc<B>, listeners: Vec<Arc<dyn EventListener>>) -> Self {
+impl<F: FileSystem> DualPipesBuilder<F> {
+    pub fn new(cfg: Config, file_system: Arc<F>, listeners: Vec<Arc<dyn EventListener>>) -> Self {
         Self {
             cfg,
-            file_builder,
+            file_system,
             listeners,
             append_files: Vec::new(),
             rewrite_files: Vec::new(),
@@ -116,7 +117,7 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
                         );
                         files.clear();
                     } else {
-                        let fd = Arc::new(LogFd::open(&path)?);
+                        let fd = Arc::new(self.file_system.open(&path)?);
                         files.push(FileToRecover { seq, path, fd });
                     }
                 }
@@ -145,7 +146,7 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
             || {
                 Self::recover_queue(
                     LogQueue::Append,
-                    self.file_builder.clone(),
+                    self.file_system.clone(),
                     self.cfg.recovery_mode,
                     append_concurrency,
                     self.cfg.recovery_read_block_size.0 as usize,
@@ -155,7 +156,7 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
             || {
                 Self::recover_queue(
                     LogQueue::Rewrite,
-                    self.file_builder.clone(),
+                    self.file_system.clone(),
                     self.cfg.recovery_mode,
                     rewrite_concurrency,
                     self.cfg.recovery_read_block_size.0 as usize,
@@ -167,7 +168,7 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
         Ok((append?, rewrite?))
     }
 
-    pub fn finish(self) -> Result<DualPipes<B>> {
+    pub fn finish(self) -> Result<DualPipes<F>> {
         let appender = self.build_pipe(LogQueue::Append)?;
         let rewriter = self.build_pipe(LogQueue::Rewrite)?;
         DualPipes::open(&self.cfg.dir, appender, rewriter)
@@ -175,11 +176,11 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
 
     fn recover_queue<S: ReplayMachine>(
         queue: LogQueue,
-        file_builder: Arc<B>,
+        file_system: Arc<F>,
         recovery_mode: RecoveryMode,
         concurrency: usize,
         read_block_size: usize,
-        files: &[FileToRecover],
+        files: &[FileToRecover<F>],
     ) -> Result<S> {
         if concurrency == 0 || files.is_empty() {
             return Ok(S::default());
@@ -198,7 +199,7 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
                     let is_last_file = index == chunk_count - 1 && i == file_count - 1;
                     reader.open(
                         FileId { queue, seq: f.seq },
-                        build_file_reader(file_builder.as_ref(), &f.path, f.fd.clone())?,
+                        build_file_reader(file_system.as_ref(), &f.path, f.fd.clone())?,
                     )?;
                     loop {
                         match reader.next() {
@@ -236,16 +237,16 @@ impl<B: FileBuilder> DualPipesBuilder<B> {
         Ok(sequential_replay_machine)
     }
 
-    fn build_pipe(&self, queue: LogQueue) -> Result<SinglePipe<B>> {
+    fn build_pipe(&self, queue: LogQueue) -> Result<SinglePipe<F>> {
         let files = match queue {
             LogQueue::Append => &self.append_files,
             LogQueue::Rewrite => &self.rewrite_files,
         };
         let first_seq = files.first().map(|f| f.seq).unwrap_or(0);
-        let files: VecDeque<Arc<LogFd>> = files.iter().map(|f| f.fd.clone()).collect();
+        let files: VecDeque<Arc<F::Handle>> = files.iter().map(|f| f.fd.clone()).collect();
         SinglePipe::open(
             &self.cfg,
-            self.file_builder.clone(),
+            self.file_system.clone(),
             self.listeners.clone(),
             queue,
             first_seq,

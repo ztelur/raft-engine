@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 /// FileSystem
 pub trait FileSystem: Send + Sync {
-    type Handle: Clone + Send + Sync;
+    type Handle: Send + Sync + Handle;
     type Reader: Seek + Read + Send + ReadExt;
     type Writer: Seek + Write + Send + WriteExt;
 
@@ -16,6 +16,9 @@ pub trait FileSystem: Send + Sync {
     fn new_writer(&self, handle: Arc<Self::Handle>) -> Result<Self::Writer>;
 }
 
+pub trait Handle {
+    fn truncate(&self, offset: usize) -> Result<()>;
+}
 /// LowExt is common low level api
 pub trait LowExt {
     fn file_size(&self) -> Result<usize>;

@@ -14,8 +14,7 @@ use nix::sys::uio::{pread, pwrite};
 use nix::unistd::{close, ftruncate, lseek, Whence};
 use nix::NixPath;
 
-use crate::file_builder::FileBuilder;
-use crate::file_system::{FileSystem, LowExt, WriteExt};
+use crate::file_system::{FileSystem, Handle, LowExt, ReadExt, WriteExt};
 use crate::metrics::*;
 use crate::FileBlockHandle;
 use crate::Result;
@@ -140,13 +139,6 @@ impl LogFd {
             .map_err(|e| from_nix_error(e, "lseek"))
     }
 
-    pub fn truncate(&self, offset: usize) -> IoResult<()> {
-        fail_point!("log_fd::truncate::err", |_| {
-            Err(from_nix_error(nix::Error::EINVAL, "fp"))
-        });
-        ftruncate(self.0, offset as i64).map_err(|e| from_nix_error(e, "ftruncate"))
-    }
-
     #[allow(unused_variables)]
     pub fn allocate(&self, offset: usize, size: usize) -> IoResult<()> {
         fail_point!("log_fd::allocate::err", |_| {
@@ -166,6 +158,15 @@ impl LogFd {
         {
             Ok(())
         }
+    }
+}
+
+impl Handle for LogFd {
+    fn truncate(&self, offset: usize) -> IoResult<()> {
+        fail_point!("log_fd::truncate::err", |_| {
+            Err(from_nix_error(nix::Error::EINVAL, "fp"))
+        });
+        ftruncate(self.0, offset as i64).map_err(|e| from_nix_error(e, "ftruncate"))
     }
 }
 
@@ -229,8 +230,9 @@ impl LowExt for LogFile {
     }
 }
 
-impl WriteExt for LogFile {
+impl ReadExt for LogFile {}
 
+impl WriteExt for LogFile {
     fn truncate(&self, offset: usize) -> IoResult<()> {
         self.inner.truncate(offset)
     }
@@ -249,8 +251,8 @@ pub fn build_file_writer<F: FileSystem>(
     path: &Path,
     fd: Arc<F::Handle>,
     create: bool,
-) -> Result<LogFileWriter<B>> {
-    let writer = system.new_writer( fd)?;
+) -> Result<LogFileWriter<F>> {
+    let writer = system.new_writer(fd)?;
     LogFileWriter::open(writer)
 }
 
@@ -345,7 +347,7 @@ pub fn build_file_reader<F: FileSystem>(
     system: &F,
     path: &Path,
     fd: Arc<F::Handle>,
-) -> Result<LogFileReader<B>> {
+) -> Result<LogFileReader<F>> {
     let reader = system.new_reader(fd)?;
     LogFileReader::open(reader)
 }
@@ -358,7 +360,7 @@ pub struct LogFileReader<F: FileSystem> {
 }
 
 impl<F: FileSystem> LogFileReader<F> {
-    fn open(reader: Arc<F::Reader>) -> Result<Self> {
+    fn open(reader: F::Reader) -> Result<Self> {
         Ok(Self {
             reader,
             // Set to an invalid offset to force a reseek at first read.
@@ -389,7 +391,7 @@ impl<F: FileSystem> LogFileReader<F> {
     }
 }
 
-pub struct DefaultFileSystem {}
+pub struct DefaultFileSystem;
 
 impl FileSystem for DefaultFileSystem {
     type Handle = LogFd;
@@ -397,19 +399,18 @@ impl FileSystem for DefaultFileSystem {
     type Writer = LogFile;
 
     fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
-        LogFd::create(path)
+        LogFd::create(path.as_ref())
     }
 
     fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
-        LogFd::open(path)
+        LogFd::open(path.as_ref())
     }
 
     fn new_reader(&self, handle: Arc<LogFd>) -> IoResult<LogFile> {
-        Ok(LogFile::new(handle.clone()))
+        Ok(LogFile::new(handle))
     }
 
     fn new_writer(&self, handle: Arc<LogFd>) -> IoResult<LogFile> {
-        Ok(LogFile::new(handle.clone()))
+        Ok(LogFile::new(handle))
     }
 }
-
