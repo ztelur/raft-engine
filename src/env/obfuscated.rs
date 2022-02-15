@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::env::default::LogFd;
-use crate::env::{FileSystem, Handle, WriteExt, DefaultFileSystem};
+use crate::env::{DefaultFileSystem, FileSystem, Handle, WriteExt};
 
 pub struct ObfuscatedFile {
     inner: Arc<LogFd>,
