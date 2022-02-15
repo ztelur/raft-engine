@@ -10,12 +10,10 @@ use protobuf::{parse_from_bytes, Message};
 
 use crate::config::{Config, RecoveryMode};
 use crate::consistency::ConsistencyChecker;
+use crate::env::{DefaultFileSystem, FileSystem};
 use crate::event_listener::EventListener;
 use crate::file_pipe_log::debug::LogItemReader;
-use crate::file_pipe_log::{
-    DefaultFileSystem, DefaultMachineFactory, FilePipeLog, FilePipeLogBuilder,
-};
-use crate::file_system::FileSystem;
+use crate::file_pipe_log::{DefaultMachineFactory, FilePipeLog, FilePipeLogBuilder};
 use crate::log_batch::{Command, LogBatch, MessageExt};
 use crate::memtable::{EntryIndex, MemTableAccessor, MemTableRecoverContext};
 use crate::metrics::*;
@@ -414,7 +412,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file_pipe_log::debug::ObfuscatedFileSystem;
+    use crate::env::ObfuscatedFileSystem;
     use crate::file_pipe_log::FileNameExt;
     use crate::test_util::{generate_entries, PanicGuard};
     use crate::util::ReadableSize;
