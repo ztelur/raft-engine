@@ -261,19 +261,19 @@ impl FileSystem for DefaultFileSystem {
     type Reader = LogFile;
     type Writer = LogFile;
 
-    fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
+    fn create<P: AsRef<Path>>(&self, path: P) -> IoResult<Self::Handle> {
         LogFd::create(path.as_ref())
     }
 
-    fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<LogFd> {
+    fn open<P: AsRef<Path>>(&self, path: P) -> IoResult<Self::Handle> {
         LogFd::open(path.as_ref())
     }
 
-    fn new_reader(&self, handle: Arc<LogFd>) -> IoResult<LogFile> {
+    fn new_reader(&self, handle: Arc<Self::Handle>) -> IoResult<Self::Reader> {
         Ok(LogFile::new(handle))
     }
 
-    fn new_writer(&self, handle: Arc<LogFd>) -> IoResult<LogFile> {
+    fn new_writer(&self, handle: Arc<Self::Handle>) -> IoResult<Self::Writer> {
         Ok(LogFile::new(handle))
     }
 }
