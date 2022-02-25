@@ -36,7 +36,7 @@ mod codec;
 mod config;
 mod consistency;
 mod engine;
-mod env;
+pub mod env;
 mod errors;
 mod event_listener;
 mod file_pipe_log;
